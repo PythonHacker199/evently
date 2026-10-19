@@ -9,7 +9,7 @@ import { getPublicConfig } from './src/templates.js';
 import { validatePlanInput, validateQuestion } from './src/validate.js';
 import { buildPlan } from './src/planner.js';
 import { createGeminiClient } from './src/gemini.js';
-import { generateIdeas, answerQuestion } from './src/ideas.js';
+import { generateIdeas, answerQuestion, describeError } from './src/ideas.js';
 import { formatISODate, startOfUTCDay } from './src/dates.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -193,6 +193,7 @@ function sendJson(res, status, payload) {
  * @typedef {object} AppOptions
  * @property {string} [apiKey] Gemini API key; when absent the app uses curated ideas.
  * @property {string} [model]
+ * @property {string[]} [fallbackModels] tried in order when the primary model is overloaded
  * @property {typeof fetch} [fetchImpl]
  * @property {() => Date} [now]
  * @property {string} [publicDir]
@@ -209,6 +210,7 @@ export async function createApp(options = {}) {
   const {
     apiKey,
     model,
+    fallbackModels,
     fetchImpl,
     now = () => new Date(),
     publicDir = path.join(ROOT, 'public'),
@@ -217,7 +219,7 @@ export async function createApp(options = {}) {
     log = console,
   } = options;
 
-  const client = apiKey ? createGeminiClient({ apiKey, model, fetchImpl }) : null;
+  const client = apiKey ? createGeminiClient({ apiKey, model, fallbackModels, fetchImpl }) : null;
   const files = await loadStatic(publicDir);
   const limiter = createRateLimiter(rateLimit);
   const planCache = createTtlCache({ max: 200, ttlMs: 60 * 60 * 1000 });
@@ -269,10 +271,10 @@ export async function createApp(options = {}) {
     if (!question.ok) throw new HttpError(400, question.error);
 
     try {
-      const answer = await answerQuestion(buildPlan(input.value, today), question.value, client);
-      sendJson(res, 200, { answer, model: client.model });
+      const { answer, model: used } = await answerQuestion(buildPlan(input.value, today), question.value, client);
+      sendJson(res, 200, { answer, model: used });
     } catch (err) {
-      log.warn(`Gemini ask failed: ${err instanceof Error ? err.message : err}`);
+      log.warn(`Gemini ask failed: ${describeError(err)}`);
       throw new HttpError(502, 'The AI assistant could not answer right now. Please try again.');
     }
   }
@@ -349,6 +351,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const server = await createApp({
     apiKey: process.env.GEMINI_API_KEY || undefined,
     model: process.env.GEMINI_MODEL || undefined,
+    // Comma-separated; set to an empty string to disable fallback.
+    fallbackModels: process.env.GEMINI_FALLBACK_MODELS === undefined
+      ? undefined
+      : process.env.GEMINI_FALLBACK_MODELS.split(',').map((s) => s.trim()).filter(Boolean),
     trustProxy: process.env.TRUST_PROXY === '1' || Boolean(process.env.K_SERVICE),
   });
   server.listen(port, () => {

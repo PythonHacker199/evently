@@ -7,13 +7,14 @@ const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 export class GeminiError extends Error {
   /**
-   * @param {string} message
-   * @param {{ status?: number, cause?: unknown }} [opts]
+   * @param {string} message safe to show to users
+   * @param {{ status?: number, cause?: unknown, detail?: string }} [opts] `detail` is for server logs only
    */
-  constructor(message, { status, cause } = {}) {
+  constructor(message, { status, cause, detail } = {}) {
     super(message, { cause });
     this.name = 'GeminiError';
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -39,19 +40,32 @@ export function extractText(data) {
   return text;
 }
 
+/** Upstream statuses worth retrying on another model: rate limits, overload, transient server errors. */
+const RETRYABLE_STATUS = new Set([429, 500, 503, 504]);
+
 /**
- * @param {{ apiKey: string, model?: string, fetchImpl?: typeof fetch, timeoutMs?: number }} options
+ * @param {{ apiKey: string, model?: string, fallbackModels?: string[], fetchImpl?: typeof fetch, timeoutMs?: number }} options
+ *   `fallbackModels` are tried in order when the primary model is overloaded or rate limited.
  */
-export function createGeminiClient({ apiKey, model = 'gemini-flash-latest', fetchImpl = fetch, timeoutMs = 30_000 }) {
+export function createGeminiClient({
+  apiKey,
+  model = 'gemini-flash-latest',
+  fallbackModels = ['gemini-flash-lite-latest'],
+  fetchImpl = fetch,
+  timeoutMs = 30_000,
+}) {
   if (!apiKey) throw new Error('createGeminiClient requires an apiKey');
+  const models = [...new Set([model, ...fallbackModels].filter(Boolean))];
 
   /**
+   * One generateContent call against one model.
+   * @param {string} target model id
    * @param {{ system: string, prompt: string, generationConfig: object }} req
    */
-  async function generate({ system, prompt, generationConfig }) {
+  async function callModel(target, { system, prompt, generationConfig }) {
     let res;
     try {
-      res = await fetchImpl(`${API_BASE}/${encodeURIComponent(model)}:generateContent`, {
+      res = await fetchImpl(`${API_BASE}/${encodeURIComponent(target)}:generateContent`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
@@ -66,27 +80,50 @@ export function createGeminiClient({ apiKey, model = 'gemini-flash-latest', fetc
       throw new GeminiError(timedOut ? 'Gemini request timed out.' : 'Could not reach Gemini.', { cause: err });
     }
     if (!res.ok) {
-      // Do not echo the upstream body to clients; it can contain request details.
-      throw new GeminiError(`Gemini API error (HTTP ${res.status}).`, { status: res.status });
+      // Keep Google's reason for server logs, but never echo it to clients.
+      const body = await res.json().catch(() => null);
+      const detail = body?.error ? `${body.error.status ?? ''}: ${String(body.error.message ?? '').slice(0, 300)}` : undefined;
+      throw new GeminiError(`Gemini API error (HTTP ${res.status}).`, { status: res.status, detail });
     }
     return extractText(await res.json());
   }
 
+  /**
+   * Try each model in order, moving on only for retryable upstream errors.
+   * @param {{ system: string, prompt: string, generationConfig: object }} req
+   * @returns {Promise<{ text: string, model: string }>}
+   */
+  async function generate(req) {
+    let lastError;
+    for (const target of models) {
+      try {
+        return { text: await callModel(target, req), model: target };
+      } catch (err) {
+        lastError = err;
+        const retryable = err instanceof GeminiError && err.status !== undefined && RETRYABLE_STATUS.has(err.status);
+        if (!retryable) throw err;
+      }
+    }
+    throw lastError;
+  }
+
   return {
     model,
+    models,
 
     /**
      * Ask for JSON that matches a response schema.
      * @param {{ system: string, prompt: string, schema: object, maxOutputTokens?: number, temperature?: number }} req
+     * @returns {Promise<{ data: any, model: string }>} parsed JSON and the model that produced it
      */
     async generateJson({ system, prompt, schema, maxOutputTokens = 4096, temperature = 0.8 }) {
-      const text = await generate({
+      const { text, model: used } = await generate({
         system,
         prompt,
         generationConfig: { responseMimeType: 'application/json', responseSchema: schema, maxOutputTokens, temperature },
       });
       try {
-        return JSON.parse(text);
+        return { data: JSON.parse(text), model: used };
       } catch (err) {
         throw new GeminiError('Gemini returned malformed JSON.', { cause: err });
       }
@@ -95,6 +132,7 @@ export function createGeminiClient({ apiKey, model = 'gemini-flash-latest', fetc
     /**
      * Ask for a plain-text answer.
      * @param {{ system: string, prompt: string, maxOutputTokens?: number, temperature?: number }} req
+     * @returns {Promise<{ text: string, model: string }>}
      */
     async generateText({ system, prompt, maxOutputTokens = 2048, temperature = 0.6 }) {
       return generate({ system, prompt, generationConfig: { maxOutputTokens, temperature } });

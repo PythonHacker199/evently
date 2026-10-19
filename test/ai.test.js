@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createGeminiClient, extractText, GeminiError } from '../src/gemini.js';
-import { sanitizeIdeas, curatedIdeas, generateIdeas, buildBrief, answerQuestion, IDEAS_SCHEMA } from '../src/ideas.js';
+import { sanitizeIdeas, curatedIdeas, generateIdeas, buildBrief, answerQuestion, describeError, IDEAS_SCHEMA } from '../src/ideas.js';
 import { buildPlan } from '../src/planner.js';
 import { validatePlanInput } from '../src/validate.js';
 import { parseISODate } from '../src/dates.js';
@@ -53,7 +53,7 @@ describe('gemini client', () => {
     const fetchImpl = fakeFetch(geminiReply('{"ok":true}'));
     const client = createGeminiClient({ apiKey: 'test-key', model: 'gemini-test', fetchImpl });
     const out = await client.generateJson({ system: 'sys', prompt: 'hello', schema: IDEAS_SCHEMA });
-    assert.deepEqual(out, { ok: true });
+    assert.deepEqual(out, { data: { ok: true }, model: 'gemini-test' });
     const [call] = fetchImpl.calls;
     assert.match(call.url, /models\/gemini-test:generateContent$/);
     assert.ok(!call.url.includes('test-key'));
@@ -76,6 +76,37 @@ describe('gemini client', () => {
 
     const bad = createGeminiClient({ apiKey: 'k', fetchImpl: fakeFetch(geminiReply('not json')) });
     await assert.rejects(bad.generateJson({ system: 's', prompt: 'p', schema: {} }), /malformed JSON/);
+  });
+
+  test('keeps Google’s error reason for logs only', async () => {
+    const body = { error: { status: 'UNAVAILABLE', message: 'This model is currently experiencing high demand.' } };
+    const client = createGeminiClient({ apiKey: 'k', fallbackModels: [], fetchImpl: fakeFetch(body, 503) });
+    await assert.rejects(client.generateText({ system: 's', prompt: 'p' }), (err) => {
+      assert.equal(err.message, 'Gemini API error (HTTP 503).');
+      assert.equal(err.detail, 'UNAVAILABLE: This model is currently experiencing high demand.');
+      assert.equal(describeError(err), 'Gemini API error (HTTP 503). UNAVAILABLE: This model is currently experiencing high demand.');
+      return true;
+    });
+  });
+
+  test('falls back to the next model when the primary is overloaded', async () => {
+    const urls = [];
+    const fetchImpl = async (url) => {
+      urls.push(url);
+      return url.includes('primary')
+        ? new Response(JSON.stringify({ error: { status: 'UNAVAILABLE', message: 'busy' } }), { status: 503 })
+        : new Response(JSON.stringify(geminiReply('hello from lite')), { status: 200 });
+    };
+    const client = createGeminiClient({ apiKey: 'k', model: 'primary', fallbackModels: ['lite'], fetchImpl });
+    assert.deepEqual(await client.generateText({ system: 's', prompt: 'p' }), { text: 'hello from lite', model: 'lite' });
+    assert.equal(urls.length, 2);
+  });
+
+  test('does not fall back on non-retryable errors (e.g. bad key)', async () => {
+    const fetchImpl = fakeFetch({ error: { status: 'PERMISSION_DENIED', message: 'API key not valid' } }, 403);
+    const client = createGeminiClient({ apiKey: 'k', model: 'primary', fallbackModels: ['lite'], fetchImpl });
+    await assert.rejects(client.generateText({ system: 's', prompt: 'p' }), (err) => err.status === 403);
+    assert.equal(fetchImpl.calls.length, 1);
   });
 
   test('network failures are wrapped', async () => {
@@ -152,8 +183,9 @@ describe('ideas', () => {
   test('answerQuestion sends plan context and cleans the reply', async () => {
     const fetchImpl = fakeFetch(geminiReply('## Plan\n**Book the venue** first.'));
     const client = createGeminiClient({ apiKey: 'k', fetchImpl });
-    const answer = await answerQuestion(plan(), 'What first?', client);
+    const { answer, model } = await answerQuestion(plan(), 'What first?', client);
     assert.equal(answer, 'Plan\nBook the venue first.');
+    assert.equal(model, 'gemini-flash-latest');
     const prompt = fetchImpl.calls[0].body.contents[0].parts[0].text;
     assert.match(prompt, /upcomingMilestones/);
     assert.match(prompt, /What first\?/);

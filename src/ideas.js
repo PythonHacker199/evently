@@ -160,6 +160,16 @@ export function curatedIdeas(plan) {
 }
 
 /**
+ * One-line, log-safe description of an error (includes Gemini's upstream reason when present).
+ * @param {unknown} err
+ */
+export function describeError(err) {
+  if (!(err instanceof Error)) return String(err);
+  const detail = /** @type {{ detail?: string }} */ (err).detail;
+  return detail ? `${err.message} ${detail}` : err.message;
+}
+
+/**
  * Personalised ideas from Gemini, falling back to curated ideas. The response says which one
  * was used so the UI can label AI content honestly.
  * @param {ReturnType<typeof import('./planner.js').buildPlan>} plan
@@ -169,14 +179,14 @@ export function curatedIdeas(plan) {
 export async function generateIdeas(plan, client, log = console) {
   if (!client) return { source: 'curated', notice: 'Gemini is not configured, so these are curated ideas.', ...curatedIdeas(plan) };
   try {
-    const raw = await client.generateJson({
+    const { data, model } = await client.generateJson({
       system: IDEAS_SYSTEM_PROMPT,
       prompt: `Create personalised ideas for this event brief:\n${JSON.stringify(buildBrief(plan))}`,
       schema: IDEAS_SCHEMA,
     });
-    return { source: 'gemini', model: client.model, ...sanitizeIdeas(raw) };
+    return { source: 'gemini', model, ...sanitizeIdeas(data) };
   } catch (err) {
-    log.warn?.(`Gemini ideas failed, using curated fallback: ${err instanceof Error ? err.message : err}`);
+    log.warn?.(`Gemini ideas failed, using curated fallback: ${describeError(err)}`);
     return { source: 'curated', notice: 'The AI service was unavailable, so these are curated ideas.', ...curatedIdeas(plan) };
   }
 }
@@ -186,6 +196,7 @@ export async function generateIdeas(plan, client, log = console) {
  * @param {ReturnType<typeof import('./planner.js').buildPlan>} plan
  * @param {string} question validated question
  * @param {ReturnType<typeof import('./gemini.js').createGeminiClient>} client
+ * @returns {Promise<{ answer: string, model: string }>}
  */
 export async function answerQuestion(plan, question, client) {
   const context = {
@@ -197,9 +208,9 @@ export async function answerQuestion(plan, question, client) {
     vendors: plan.vendors.map((v) => ({ vendor: v.name, bookBy: v.bookBy })),
     warnings: plan.warnings,
   };
-  const text = await client.generateText({
+  const { text, model } = await client.generateText({
     system: ASK_SYSTEM_PROMPT,
     prompt: `Plan JSON:\n${JSON.stringify(context)}\n\nQuestion:\n${question}`,
   });
-  return text.replace(/\*\*|__|`/g, '').replace(/^#+\s*/gm, '').trim().slice(0, 2500);
+  return { answer: text.replace(/\*\*|__|`/g, '').replace(/^#+\s*/gm, '').trim().slice(0, 2500), model };
 }

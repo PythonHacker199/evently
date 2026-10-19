@@ -21,6 +21,7 @@ Planning an event means juggling money, deadlines and a dozen vendors, usually i
 ## How GenAI is used (and kept honest)
 
 - **Gemini via the Gemini API** (`gemini-flash-latest` by default, override with `GEMINI_MODEL`) with **structured output** (`responseSchema`), so responses are typed JSON and never scraped prose.
+- **Model fallback:** if the main model is overloaded or rate limited (429/5xx), the request is retried on `gemini-flash-lite-latest` (configure with `GEMINI_FALLBACK_MODELS`). The UI shows which model answered.
 - **Numbers never come from the model.** Budgets, dates and per-guest figures are computed server-side; the model gets them as context and is instructed not to invent prices, businesses or URLs.
 - **Prompt-injection guard:** user text is passed as a JSON *data* brief, and the system prompt tells the model to treat it as data, not instructions.
 - **Output validation:** AI output is sanitised (markdown stripped, lengths capped, invalid items dropped). If it's malformed or Gemini is down, the app **falls back to curated ideas** and labels them honestly in the UI.
