@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EventWise: AI Event Planner</title>
+  <meta name="description" content="Plan weddings, birthdays and community events with an AI assistant: budget split, timeline, vendor checklist and personalised ideas.">
+  <meta name="theme-color" content="#7a2e4f">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="site-header">
+    <div class="brand">
+      <img class="brand-mark" src="/favicon.svg" alt="" width="36" height="36">
+      <div>
+        <p class="brand-name">EventWise</p>
+        <p class="brand-tag">Your AI planning partner for weddings, birthdays &amp; community events</p>
+      </div>
+    </div>
+    <p id="ai-status" class="ai-badge" data-state="loading">Checking AI…</p>
+  </header>
+
+  <main id="main" class="layout" tabindex="-1">
+    <section class="panel planner" aria-labelledby="form-title">
+      <h1 id="form-title" class="panel-title">Plan your event</h1>
+      <p class="muted">Tell us the basics. We split your budget, build a timeline and vendor checklist, and Gemini adds ideas tailored to you.</p>
+
+      <form id="plan-form" novalidate>
+        <fieldset class="event-types">
+          <legend>What are you planning?</legend>
+          <div class="type-grid" id="event-type-options"></div>
+          <p class="field-error" id="eventType-error" hidden></p>
+        </fieldset>
+
+        <div class="field">
+          <label for="title">Event name <span class="optional">(optional)</span></label>
+          <input id="title" name="title" type="text" maxlength="80" autocomplete="off" placeholder="e.g. Asha &amp; Rohan’s wedding">
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="date">Event date</label>
+            <input id="date" name="date" type="date" required aria-describedby="date-error">
+            <p class="field-error" id="date-error" hidden></p>
+          </div>
+          <div class="field">
+            <label for="guests">Guests</label>
+            <input id="guests" name="guests" type="number" inputmode="numeric" min="1" max="10000" step="1" required value="100" aria-describedby="guests-error">
+            <p class="field-error" id="guests-error" hidden></p>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field grow">
+            <label for="budget">Total budget</label>
+            <input id="budget" name="budget" type="number" inputmode="numeric" min="1" step="1" required value="500000" aria-describedby="budget-hint budget-error">
+            <p class="hint" id="budget-hint">Everything included: venue, food, decor, and a buffer.</p>
+            <p class="field-error" id="budget-error" hidden></p>
+          </div>
+          <div class="field">
+            <label for="currency">Currency</label>
+            <select id="currency" name="currency"></select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="location">City or area <span class="optional">(optional)</span></label>
+          <input id="location" name="location" type="text" maxlength="80" autocomplete="address-level2" placeholder="e.g. Kolkata">
+        </div>
+
+        <div class="field">
+          <label for="theme">Theme or vibe <span class="optional">(optional)</span></label>
+          <input id="theme" name="theme" type="text" maxlength="120" placeholder="e.g. pastel garden, retro arcade, eco-friendly street fair">
+        </div>
+
+        <fieldset class="priorities" aria-describedby="priorities-hint">
+          <legend>What matters most? <span class="optional">(up to 3)</span></legend>
+          <p class="hint" id="priorities-hint">Priorities get a bigger share of the budget.</p>
+          <div class="chip-group" id="priority-options"></div>
+          <p class="field-error" id="priorities-error" hidden></p>
+        </fieldset>
+
+        <div class="field">
+          <label for="notes">Anything else? <span class="optional">(optional)</span></label>
+          <textarea id="notes" name="notes" rows="3" maxlength="600" aria-describedby="notes-hint" placeholder="Traditions, dietary needs, accessibility, must-haves…"></textarea>
+          <p class="hint" id="notes-hint"><span id="notes-count">0</span>/600 characters</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block" id="submit-btn">Generate my plan</button>
+        <p id="form-status" class="form-status" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <section class="panel results" aria-labelledby="results-heading" aria-busy="false" id="results">
+      <h2 id="results-heading" class="visually-hidden">Your plan</h2>
+      <div id="empty-state" class="empty-state">
+        <p class="panel-title">Your plan will appear here</p>
+        <ul class="feature-list">
+          <li><strong>Budget split</strong> that always adds up, weighted to your priorities.</li>
+          <li><strong>Timeline</strong> counted back from your date, compressed if time is short.</li>
+          <li><strong>Vendor checklist</strong> with book-by dates and questions to ask.</li>
+          <li><strong>Personalised ideas</strong> from Gemini, plus a planner you can ask anything.</li>
+        </ul>
+      </div>
+
+      <div id="plan-view" hidden>
+        <div class="plan-header">
+          <div>
+            <p class="eyebrow" id="plan-eyebrow"></p>
+            <h3 class="panel-title" id="plan-title" tabindex="-1"></h3>
+            <p class="muted" id="plan-subtitle"></p>
+          </div>
+          <div class="plan-actions">
+            <button type="button" class="btn btn-ghost" id="ics-btn">Download calendar (.ics)</button>
+            <button type="button" class="btn btn-ghost" id="print-btn">Print / PDF</button>
+          </div>
+        </div>
+
+        <ul class="warnings" id="warnings" hidden></ul>
+
+        <div class="tabs" role="tablist" aria-label="Plan sections" id="tablist">
+          <button role="tab" type="button" id="tab-overview" aria-controls="panel-overview" aria-selected="true">Overview</button>
+          <button role="tab" type="button" id="tab-budget" aria-controls="panel-budget" aria-selected="false" tabindex="-1">Budget</button>
+          <button role="tab" type="button" id="tab-timeline" aria-controls="panel-timeline" aria-selected="false" tabindex="-1">Timeline</button>
+          <button role="tab" type="button" id="tab-vendors" aria-controls="panel-vendors" aria-selected="false" tabindex="-1">Vendors</button>
+          <button role="tab" type="button" id="tab-ideas" aria-controls="panel-ideas" aria-selected="false" tabindex="-1">Ideas</button>
+          <button role="tab" type="button" id="tab-ask" aria-controls="panel-ask" aria-selected="false" tabindex="-1">Ask AI</button>
+        </div>
+
+        <div role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="0" class="tabpanel"></div>
+        <div role="tabpanel" id="panel-budget" aria-labelledby="tab-budget" tabindex="0" class="tabpanel" hidden></div>
+        <div role="tabpanel" id="panel-timeline" aria-labelledby="tab-timeline" tabindex="0" class="tabpanel" hidden></div>
+        <div role="tabpanel" id="panel-vendors" aria-labelledby="tab-vendors" tabindex="0" class="tabpanel" hidden></div>
+        <div role="tabpanel" id="panel-ideas" aria-labelledby="tab-ideas" tabindex="0" class="tabpanel" hidden></div>
+        <div role="tabpanel" id="panel-ask" aria-labelledby="tab-ask" tabindex="0" class="tabpanel" hidden>
+          <p class="muted">Ask about this plan: trade-offs, what to do this week, how to adapt for rain, a vegan menu…</p>
+          <div class="chip-group" id="ask-suggestions"></div>
+          <ol class="chat-log" id="chat-log" aria-live="polite" aria-label="Conversation with the planner"></ol>
+          <form id="ask-form" class="ask-form" novalidate>
+            <label for="question" class="visually-hidden">Your question</label>
+            <textarea id="question" rows="2" maxlength="500" placeholder="e.g. What should I book this week?"></textarea>
+            <button type="submit" class="btn btn-primary" id="ask-btn">Ask</button>
+          </form>
+          <p id="ask-status" class="form-status" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>Budget and dates are calculated by EventWise. Ideas are AI suggestions, so check prices, availability and local rules with vendors. Your plan and progress stay in this browser.</p>
+  </footer>
+</body>
+</html>

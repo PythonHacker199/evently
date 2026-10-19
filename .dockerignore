@@ -1,0 +1,8 @@
+.env
+.env.*
+.git
+.claude
+node_modules
+test
+*.md
+*.log

@@ -1,0 +1,17 @@
+{
+  "name": "eventwise",
+  "version": "1.0.0",
+  "description": "GenAI-powered planning assistant for weddings, birthdays and community events: budgets, timelines, vendor checklists and personalised ideas (Gemini).",
+  "type": "module",
+  "main": "server.js",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file-if-exists=.env --watch server.js",
+    "test": "node --test"
+  }
+}
