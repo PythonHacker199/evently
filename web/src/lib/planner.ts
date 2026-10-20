@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 /* ----------------------------------------------------------------------------
  * Types mirroring the EventWise API (eventwise/src/planner.js + ideas.js).
@@ -155,15 +155,18 @@ export function usePlanner() {
 
   useEffect(() => () => inflight.current?.abort(), []);
 
+  // Plain function declarations (not useCallback): nothing downstream is memoised, and the
+  // "Try again" closures below can call the function they belong to.
+
   /** Cancel whatever is running; only the newest request may update state. */
-  const begin = () => {
+  function begin() {
     inflight.current?.abort();
     const ctrl = new AbortController();
     inflight.current = ctrl;
     return ctrl;
-  };
+  }
 
-  const runPlan = useCallback(async (input: Partial<PlanInput>, askedFields: DetailField[] = []) => {
+  async function runPlan(input: Partial<PlanInput>, askedFields: DetailField[] = []) {
     const ctrl = begin();
     setState({ status: 'planning' });
     try {
@@ -183,53 +186,43 @@ export function usePlanner() {
       }
       setState({ status: 'error', message: messageOf(err), retry: () => void runPlan(input, askedFields) });
     }
-  }, []);
+  }
 
-  const start = useCallback(
-    async (rawText: string) => {
-      const text = rawText.trim();
-      if (text.length < MIN_DESCRIPTION) {
-        setState({ status: 'error', message: 'Tell us a little more about your event: what, when, how many guests and your budget.' });
+  async function start(rawText: string) {
+    const text = rawText.trim();
+    if (text.length < MIN_DESCRIPTION) {
+      setState({ status: 'error', message: 'Tell us a little more about your event: what, when, how many guests and your budget.' });
+      return;
+    }
+    const ctrl = begin();
+    setState({ status: 'parsing' });
+    try {
+      const { input, missing } = await postJson<{ input: Partial<PlanInput>; missing: DetailField[] }>('/api/parse', { text }, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      if (missing.length > 0) {
+        setState({ status: 'details', reason: 'missing', input, fields: missing, errors: {} });
         return;
       }
-      const ctrl = begin();
-      setState({ status: 'parsing' });
-      try {
-        const { input, missing } = await postJson<{ input: Partial<PlanInput>; missing: DetailField[] }>(
-          '/api/parse',
-          { text },
-          ctrl.signal,
-        );
-        if (ctrl.signal.aborted) return;
-        if (missing.length > 0) {
-          setState({ status: 'details', reason: 'missing', input, fields: missing, errors: {} });
-          return;
-        }
-        await runPlan(input);
-      } catch (err) {
-        if (ctrl.signal.aborted) return;
-        setState({ status: 'error', message: messageOf(err), retry: () => void start(text) });
-      }
-    },
-    [runPlan],
-  );
+      await runPlan(input);
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      setState({ status: 'error', message: messageOf(err), retry: () => void start(text) });
+    }
+  }
 
-  const submitDetails = useCallback(
-    (values: Partial<PlanInput>) => {
-      if (state.status !== 'details') return;
-      void runPlan({ ...state.input, ...values }, state.fields);
-    },
-    [state, runPlan],
-  );
+  function submitDetails(values: Partial<PlanInput>) {
+    if (state.status !== 'details') return;
+    void runPlan({ ...state.input, ...values }, state.fields);
+  }
 
-  const editDetails = useCallback(() => {
+  function editDetails() {
     if (state.status !== 'done') return;
     setState({ status: 'details', reason: 'edit', input: state.plan.input, fields: ALL_DETAIL_FIELDS, errors: {}, previous: state.plan });
-  }, [state]);
+  }
 
-  const cancelEdit = useCallback(() => {
+  function cancelEdit() {
     if (state.status === 'details' && state.previous) setState({ status: 'done', plan: state.previous });
-  }, [state]);
+  }
 
   const busy = state.status === 'parsing' || state.status === 'planning';
   return { state, busy, start, submitDetails, editDetails, cancelEdit };

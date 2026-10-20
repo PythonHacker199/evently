@@ -1,4 +1,4 @@
-import { EVENT_TYPES, EVENT_TYPE_KEYS, CURRENCIES } from './templates.js';
+import { EVENT_TYPES, EVENT_TYPE_KEYS, CURRENCIES, isEventType } from './templates.js';
 import { cleanText, validatePlanInput, LIMITS } from './validate.js';
 import { formatISODate } from './dates.js';
 
@@ -74,7 +74,7 @@ export function normalizeParsed(raw) {
   const notes = cleanText(r.notes, LIMITS.notes, { multiline: true });
   if (notes) out.notes = notes;
   if (Array.isArray(r.priorities)) {
-    out.priorities = [...new Set(r.priorities.filter((p) => typeof p === 'string' && PRIORITY_KEYS.includes(p)))].slice(0, LIMITS.maxPriorities);
+    out.priorities = [...new Set(r.priorities.filter((/** @type {unknown} */ p) => typeof p === 'string' && PRIORITY_KEYS.includes(p)))].slice(0, LIMITS.maxPriorities);
   }
   return out;
 }
@@ -94,7 +94,7 @@ export function resolveParsed(candidate, today) {
   const input = { ...candidate };
   for (const field of Object.keys(result.errors)) delete input[field];
   // Priorities only make sense once the event type is known, and only that type's categories.
-  if (typeof input.eventType === 'string' && Array.isArray(input.priorities)) {
+  if (isEventType(input.eventType) && Array.isArray(input.priorities)) {
     const allowed = new Set(EVENT_TYPES[input.eventType].budget.map((c) => c.key));
     input.priorities = input.priorities.filter((p) => allowed.has(p));
   } else {

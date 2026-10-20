@@ -1,6 +1,6 @@
 {
-  "name": "eventwise",
-  "version": "1.0.0",
+  "name": "evently",
+  "version": "1.1.0",
   "description": "GenAI-powered planning assistant for weddings, birthdays and community events: budgets, timelines, vendor checklists and personalised ideas (Gemini).",
   "type": "module",
   "main": "server.js",
@@ -13,8 +13,20 @@
     "start": "node server.js",
     "dev": "node --env-file-if-exists=.env --watch server.js",
     "dev:web": "npm --prefix web run dev",
-    "setup": "npm --prefix web ci",
+    "setup": "npm ci && npm --prefix web ci",
     "build": "npm --prefix web run build",
-    "test": "node --test"
+    "lint": "eslint . && npm --prefix web run lint",
+    "typecheck": "tsc -p tsconfig.json && npm --prefix web run typecheck",
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:web": "npm --prefix web test",
+    "test:coverage": "node --test --experimental-test-coverage \"test/**/*.test.js\"",
+    "check": "npm run lint && npm run typecheck && npm test && npm run test:web"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "typescript": "~5.9"
   }
 }

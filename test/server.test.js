@@ -20,8 +20,8 @@ async function start(options = {}) {
   return { base: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
 }
 
-const post = (base, path, body, headers = {}) =>
-  fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) });
+const post = (base, route, body, headers = {}) =>
+  fetch(`${base}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) });
 
 describe('static routing: Evently at /, classic planner at /classic/', () => {
   let app;
@@ -103,9 +103,9 @@ describe('server without Gemini (curated mode)', () => {
   });
 
   test('does not serve files outside public/', async () => {
-    for (const path of ['/../server.js', '/%2e%2e/package.json', '/src/planner.js', '/.env']) {
-      const res = await fetch(`${app.base}${path}`);
-      assert.equal(res.status, 404, path);
+    for (const route of ['/../server.js', '/%2e%2e/package.json', '/src/planner.js', '/.env']) {
+      const res = await fetch(`${app.base}${route}`);
+      assert.equal(res.status, 404, route);
     }
   });
 

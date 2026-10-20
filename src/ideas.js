@@ -78,17 +78,26 @@ function cleanList(list, limit, maxLen) {
 }
 
 /**
+ * Treat untrusted model output as a list of loosely-typed records (or an empty list).
+ * @param {unknown} value
+ * @returns {Array<Record<string, unknown> | null>}
+ */
+function asRecords(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+/**
  * Validate and normalise model output. Throws when the essentials are missing so the caller
  * can fall back to curated ideas instead of showing an empty or broken section.
  * @param {any} raw
  */
 export function sanitizeIdeas(raw) {
   if (!raw || typeof raw !== 'object') throw new Error('AI output is not an object.');
-  const themeIdeas = (Array.isArray(raw.themeIdeas) ? raw.themeIdeas : [])
+  const themeIdeas = asRecords(raw.themeIdeas)
     .map((i) => ({ title: cleanAiText(i?.title, MAX.short), description: cleanAiText(i?.description, MAX.long) }))
     .filter((i) => i.title && i.description)
     .slice(0, MAX.ideas);
-  const agenda = (Array.isArray(raw.agenda) ? raw.agenda : [])
+  const agenda = asRecords(raw.agenda)
     .map((a) => ({ time: cleanAiText(a?.time, 20), activity: cleanAiText(a?.activity, 160) }))
     .filter((a) => a.time && a.activity)
     .slice(0, MAX.agenda);

@@ -181,9 +181,9 @@ describe('POST /api/parse', () => {
     });
 
     test('identical text is served from the cache', async () => {
-      const before = fetchImpl.calls.length;
+      const callsBefore = fetchImpl.calls.length;
       assert.equal((await parse(app.base, { text: TEXT })).status, 200);
-      assert.equal(fetchImpl.calls.length, before);
+      assert.equal(fetchImpl.calls.length, callsBefore);
     });
 
     test('parsed input plus the missing field is accepted by /api/plan', async () => {

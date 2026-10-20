@@ -41,21 +41,32 @@ Both use the same API and the same planning engine.
 ## Architecture
 
 ```
-web/               Evently page: React + TypeScript + Vite + Tailwind + lucide-react
-  src/components/  Hero (video, nav, glass prompt card), PlanSection (results)
-  src/lib/         planner.ts: parse -> ask for missing details -> plan
-public/            Classic planner (framework-free HTML/CSS/JS), served at /classic/
+server.js            Wires the app together and reads config from the environment (~110 lines)
 src/
-  templates.js     Planning knowledge: budget splits, milestones, vendors per event type
-  planner.js       Deterministic budget allocation, timeline compression, vendor dates
-  validate.js      Input validation & sanitisation
-  parse.js         Free text -> plan input via Gemini structured output
-  ideas.js         Prompts, response schema, AI output sanitiser, curated fallback
-  gemini.js        Minimal Gemini REST client (key in header, timeout, model fallback)
-  dates.js         Timezone-safe calendar-day maths
-server.js          node:http server: API, static files (gzip, ETag, immutable hashed assets), security headers, rate limiting
-test/              82 tests using node:test (no test dependencies)
+  routes/api.js      /api/* handlers: validation, caching, rate limiting, Gemini calls
+  http/              json.js (body parsing, errors) · static.js (preloaded files, gzip, ETag)
+                     limits.js (rate limiter, TTL+LRU cache, client IP) · security.js (CSP and headers)
+  templates.js       Planning knowledge: budget splits, milestones, vendors per event type
+  planner.js         Deterministic budget allocation, timeline compression, vendor dates
+  validate.js        Input validation & sanitisation
+  parse.js           Free text -> plan input via Gemini structured output
+  ideas.js           Prompts, response schema, AI output sanitiser, curated fallback
+  gemini.js          Minimal Gemini REST client (key in header, per-model timeout, model fallback)
+  dates.js           Timezone-safe calendar-day maths
+web/                 Evently page: React + TypeScript + Vite + Tailwind + lucide-react
+  src/components/    Hero, PlanSection, ui.tsx (shared), plan/* (status, details form, cards, ideas)
+  src/lib/           planner.ts (parse -> ask for missing details -> plan), details.ts (form validation)
+public/              Classic planner (framework-free ES modules), served at /classic/
+  js/                dom · format · google links · api · storage · ics export
+test/                99 server tests (node:test); web/src/**/*.test.ts: 12 Vitest tests
 ```
+
+### Code quality
+
+- `npm run check` runs **ESLint** (server and React app, including React hooks rules), **TypeScript** type checking (strict `checkJs` for the server's JSDoc types, `strict` TS for the React app) and both test suites.
+- **GitHub Actions CI** (`.github/workflows/ci.yml`) runs lint, type check, tests and the production build on every push.
+- Small, single-purpose modules; pure functions (planning maths, validation, calendar export) are unit-tested without a browser or network.
+- `.editorconfig` and `.gitattributes` keep formatting and line endings consistent across Windows, macOS and Linux.
 
 **Zero runtime dependencies on the server.** It uses only Node built-ins, which keeps the attack surface small, cold starts fast and the image tiny. The React page is compiled to static files at build time.
 
@@ -88,10 +99,10 @@ Requires **Node.js 22+**.
 
 ```bash
 cp .env.example .env      # add your GEMINI_API_KEY
-npm run setup             # install the Evently page's build tools (web/)
+npm run setup             # install dev tools for the server and the Evently page
 npm run build             # build Evently into web/dist
 npm run dev               # http://localhost:8080 (Evently at /, classic at /classic/)
-npm test                  # 82 tests
+npm run check            # lint + type check + all tests
 ```
 
 While working on the React page, run `npm run dev:web` too: Vite serves it with hot reload and proxies `/api` to the server on port 8787 (set `EVENTWISE_API` to change that).

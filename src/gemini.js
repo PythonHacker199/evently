@@ -21,8 +21,18 @@ export class GeminiError extends Error {
 }
 
 /**
+ * The parts of a generateContent response this client reads.
+ * @typedef {{ text?: string, thought?: boolean }} Part
+ * @typedef {{ content?: { parts?: Part[] }, finishReason?: string }} Candidate
+ * @typedef {object} GenerateContentResponse
+ * @property {Candidate[]} [candidates]
+ * @property {{ blockReason?: string }} [promptFeedback]
+ * @property {{ status?: string, message?: string }} [error]
+ */
+
+/**
  * Join the visible text parts of the first candidate (skipping "thought" parts).
- * @param {any} data generateContent response body
+ * @param {GenerateContentResponse | null} data generateContent response body
  * @returns {string}
  */
 export function extractText(data) {
@@ -67,6 +77,7 @@ export function createGeminiClient({
    */
   async function callModel(target, { system, prompt, generationConfig }) {
     let res;
+    /** @type {GenerateContentResponse | null} */
     let body;
     try {
       // The timeout signal covers both the response headers and reading the body.
@@ -80,10 +91,12 @@ export function createGeminiClient({
         }),
         signal: AbortSignal.timeout(timeoutMs),
       });
-      body = await res.json().catch((err) => {
-        if (err instanceof Error && err.name === 'TimeoutError') throw err;
-        return null;
-      });
+      body = /** @type {GenerateContentResponse | null} */ (
+        await res.json().catch((err) => {
+          if (err instanceof Error && err.name === 'TimeoutError') throw err;
+          return null;
+        })
+      );
     } catch (err) {
       const timedOut = err instanceof Error && err.name === 'TimeoutError';
       throw new GeminiError(timedOut ? 'Gemini request timed out.' : 'Could not reach Gemini.', {

@@ -1,10 +1,13 @@
-// EventWise client. All rendering uses textContent / DOM APIs (never innerHTML) so user and
-// AI text can't inject markup. Plan and progress are kept in localStorage only.
+// Classic planner UI: form, tabs, rendering and interactions. Helpers live in ./js/*.
+// All rendering uses textContent / DOM APIs (never innerHTML) so user and AI text can't inject markup.
+import { $, h, extLink } from './js/dom.js';
+import { DAY_MS, todayUTC, toISO, daysFromToday, formatDate, relativeDays, formatMoney, formatNumber } from './js/format.js';
+import { googleCalendarUrl, googleMapsUrl } from './js/google.js';
+import { api } from './js/api.js';
+import { loadStore, saveStore, progressFor } from './js/storage.js';
+import { buildIcs, icsFileName } from './js/ics.js';
 
-const STORAGE_KEY = 'eventwise:v1';
-const MAX_SAVED_PROGRESS = 10;
 const MAX_PRIORITIES = 3;
-const DAY_MS = 86_400_000;
 const EVENT_EMOJI = { wedding: '💍', birthday: '🎂', community: '🤝' };
 const ASK_SUGGESTIONS = [
   'What should I book this week?',
@@ -13,32 +16,7 @@ const ASK_SUGGESTIONS = [
   'Suggest a menu that fits our notes',
 ];
 
-/** @param {string} sel */
-const $ = (sel) => /** @type {HTMLElement} */ (document.querySelector(sel));
-
-/**
- * Tiny element builder. `text` sets textContent; `on*` attaches listeners.
- * @param {string} tag
- * @param {Record<string, any>} [attrs]
- * @param {...any} children
- */
-function h(tag, attrs = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v === false || v == null) continue;
-    if (k === 'class') el.className = v;
-    else if (k === 'text') el.textContent = v;
-    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (v === true) el.setAttribute(k, '');
-    else el.setAttribute(k, String(v));
-  }
-  for (const c of children.flat()) {
-    if (c != null && c !== false) el.append(c instanceof Node ? c : String(c));
-  }
-  return el;
-}
-
-// ---------- State & storage ----------
+// ---------- State ----------
 
 const state = {
   /** @type {any} */ config: null,
@@ -48,118 +26,14 @@ const state = {
   store: loadStore(),
 };
 
-function loadStore() {
-  try {
-    const data = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
-    if (data && typeof data === 'object') return { plan: data.plan ?? null, progress: data.progress ?? {} };
-  } catch {
-    /* storage unavailable or corrupted: start fresh */
-  }
-  return { plan: null, progress: {} };
-}
+/** Persist the current plan and progress to this browser. */
+const persist = () => saveStore(state.store);
 
-function saveStore() {
-  try {
-    const ids = Object.keys(state.store.progress);
-    if (ids.length > MAX_SAVED_PROGRESS) {
-      for (const id of ids.slice(0, ids.length - MAX_SAVED_PROGRESS)) delete state.store.progress[id];
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.store));
-  } catch {
-    /* private mode or quota: the app still works for this session */
-  }
-}
+/** Progress (ticked tasks, booked vendors, actual spend) for the current plan. */
+const progress = () => progressFor(state.store, state.plan.id);
 
-/** @returns {{ tasks: Record<string, boolean>, vendors: Record<string, boolean>, actual: Record<string, number> }} */
-function progress() {
-  const id = state.plan.id;
-  state.store.progress[id] ??= { tasks: {}, vendors: {}, actual: {} };
-  return state.store.progress[id];
-}
-
-// ---------- Formatting ----------
-
-function todayUTC() {
-  const t = new Date();
-  return Date.UTC(t.getFullYear(), t.getMonth(), t.getDate());
-}
-
-/** @param {string} iso */
-function isoToUTC(iso) {
-  const [y, m, d] = iso.split('-').map(Number);
-  return Date.UTC(y, m - 1, d);
-}
-
-/** @param {string} iso */
-const daysFromToday = (iso) => Math.round((isoToUTC(iso) - todayUTC()) / DAY_MS);
-
-/** @param {number} ms */
-const toISO = (ms) => new Date(ms).toISOString().slice(0, 10);
-
-/** @param {string} iso */
-function fmtDate(iso) {
-  return new Date(isoToUTC(iso)).toLocaleDateString(undefined, {
-    weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
-  });
-}
-
-const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-/** @param {number} days */
-function relDays(days) {
-  if (Math.abs(days) >= 60) return rtf.format(Math.round(days / 30), 'month');
-  if (Math.abs(days) >= 14) return rtf.format(Math.round(days / 7), 'week');
-  return rtf.format(days, 'day');
-}
-
-/** @param {number} n */
-function money(n) {
-  const currency = state.plan?.budget.currency ?? 'INR';
-  return new Intl.NumberFormat(currency === 'INR' ? 'en-IN' : undefined, {
-    style: 'currency', currency, maximumFractionDigits: 0,
-  }).format(n);
-}
-
-/** @param {number} n */
-const num = (n) => new Intl.NumberFormat().format(n);
-
-// ---------- Google links (no API key needed) ----------
-
-/** @param {string} title @param {string} iso @param {string} details */
-function googleCalendarUrl(title, iso, details) {
-  const start = iso.replaceAll('-', '');
-  const end = toISO(isoToUTC(iso) + DAY_MS).replaceAll('-', '');
-  return `https://calendar.google.com/calendar/render?${new URLSearchParams({
-    action: 'TEMPLATE', text: title, dates: `${start}/${end}`, details,
-  })}`;
-}
-
-/** @param {string} query */
-const googleMapsUrl = (query) => `https://www.google.com/maps/search/?${new URLSearchParams({ api: '1', query })}`;
-
-/** @param {string} href @param {string} text @param {string} label accessible name */
-const extLink = (href, text, label) =>
-  h('a', { href, target: '_blank', rel: 'noopener noreferrer', 'aria-label': `${label} (opens in a new tab)`, text });
-
-// ---------- API ----------
-
-/** @param {string} url @param {object} [body] */
-async function api(url, body) {
-  const res = await fetch(url, body
-    ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
-    : undefined);
-  let data = {};
-  try {
-    data = await res.json();
-  } catch {
-    /* non-JSON error page */
-  }
-  if (!res.ok) {
-    const err = new Error(data.error || `Request failed (${res.status}).`);
-    Object.assign(err, { status: res.status, errors: data.errors });
-    throw err;
-  }
-  return data;
-}
+/** Money in the current plan's currency. @param {number} n */
+const money = (n) => formatMoney(n, state.plan?.budget.currency ?? 'INR');
 
 // ---------- Form ----------
 
@@ -225,7 +99,7 @@ function fillForm(input) {
   if (radio) radio.checked = true;
   for (const key of ['title', 'date', 'guests', 'budget', 'currency', 'location', 'theme', 'notes']) {
     const el = /** @type {HTMLInputElement} */ (form.elements.namedItem(key));
-    if (el && input[key] != null) el.value = String(input[key]);
+    if (el && input[key] !== null && input[key] !== undefined) el.value = String(input[key]);
   }
   renderPriorities(input.priorities ?? []);
   updateNotesCount();
@@ -297,7 +171,7 @@ async function onSubmit(event) {
     state.plan = plan;
     state.chat = [];
     state.store.plan = plan;
-    saveStore();
+    persist();
     renderPlan();
     setStatus(formStatus, `Plan ready: ${plan.timeline.length} milestones and ${plan.vendors.length} vendors.`);
     $('#plan-title').focus();
@@ -355,7 +229,7 @@ function renderPlan() {
 
   $('#plan-eyebrow').textContent = `${EVENT_EMOJI[input.eventType] ?? '🎉'} ${plan.eventLabel} plan`;
   $('#plan-title').textContent = input.title || `Your ${plan.eventLabel.toLowerCase()}`;
-  $('#plan-subtitle').textContent = [fmtDate(input.date), `${num(input.guests)} guests`, input.location, input.theme]
+  $('#plan-subtitle').textContent = [formatDate(input.date), `${formatNumber(input.guests)} guests`, input.location, input.theme]
     .filter(Boolean)
     .join(' · ');
 
@@ -396,8 +270,8 @@ function renderOverview() {
 
   $('#panel-overview').replaceChildren(
     h('div', { class: 'stat-grid' },
-      stat('Days to go', days > 0 ? num(days) : days === 0 ? 'Today!' : 'Done'),
-      stat('Guests', num(plan.input.guests)),
+      stat('Days to go', days > 0 ? formatNumber(days) : days === 0 ? 'Today!' : 'Done'),
+      stat('Guests', formatNumber(plan.input.guests)),
       stat('Total budget', money(plan.budget.total)),
       stat('Per guest', money(plan.summary.perGuest)),
     ),
@@ -414,7 +288,7 @@ function renderOverview() {
     h('div', { class: 'section' },
       h('h4', { text: 'Up next' }),
       next.length
-        ? h('ul', { class: 'tip-list' }, next.map((m) => h('li', {}, h('strong', { text: m.title }), ` by ${fmtDate(m.dueDate)} (${relDays(daysFromToday(m.dueDate))})`)))
+        ? h('ul', { class: 'tip-list' }, next.map((m) => h('li', {}, h('strong', { text: m.title }), ` by ${formatDate(m.dueDate)} (${relativeDays(daysFromToday(m.dueDate))})`)))
         : h('p', { class: 'muted', text: 'All pre-event tasks are done. Enjoy the day!' }),
     ),
   );
@@ -479,7 +353,7 @@ function renderBudget() {
             const v = Number(/** @type {HTMLInputElement} */ (e.target).value);
             if (Number.isFinite(v) && v > 0) p.actual[c.key] = Math.round(v);
             else delete p.actual[c.key];
-            saveStore();
+            persist();
             refreshTotals();
           },
         }),
@@ -521,7 +395,7 @@ function checkItem(o) {
       const checked = /** @type {HTMLInputElement} */ (e.target).checked;
       li.classList.toggle('done', checked);
       o.onToggle(checked);
-      saveStore();
+      persist();
       renderOverview();
     },
   });
@@ -542,7 +416,7 @@ function checkItem(o) {
 function dueMeta(iso, done) {
   const d = daysFromToday(iso);
   const urgent = !done && d <= 7;
-  return h('span', { class: urgent ? 'due-soon' : '' }, `${fmtDate(iso)} · ${d < 0 && !done ? 'overdue, ' : ''}${relDays(d)}`);
+  return h('span', { class: urgent ? 'due-soon' : '' }, `${formatDate(iso)} · ${d < 0 && !done ? 'overdue, ' : ''}${relativeDays(d)}`);
 }
 
 function renderTimeline() {
@@ -690,39 +564,13 @@ async function onAsk(event) {
 
 // ---------- Calendar export ----------
 
-/** @param {string} s */
-const icsEscape = (s) => s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
-
-/** Fold long lines at 73 chars as RFC 5545 requires (continuation lines start with a space). */
-const icsFold = (/** @type {string} */ line) => line.match(/.{1,73}/gu)?.join('\r\n ') ?? line;
-
 function downloadIcs() {
-  const { plan } = state;
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
-  const name = plan.input.title || plan.eventLabel;
-  /** @param {string} uid @param {string} iso @param {string} summary @param {string} desc */
-  const vevent = (uid, iso, summary, desc) => [
-    'BEGIN:VEVENT',
-    `UID:${uid}-${plan.id}@eventwise`,
-    `DTSTAMP:${stamp}`,
-    `DTSTART;VALUE=DATE:${iso.replaceAll('-', '')}`,
-    `DTEND;VALUE=DATE:${toISO(isoToUTC(iso) + DAY_MS).replaceAll('-', '')}`,
-    `SUMMARY:${icsEscape(summary)}`,
-    `DESCRIPTION:${icsEscape(desc)}`,
-    'END:VEVENT',
-  ];
-  const lines = [
-    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//EventWise//Planner//EN', 'CALSCALE:GREGORIAN',
-    ...plan.timeline.flatMap((m) => vevent(m.id, m.dueDate, `${name}: ${m.title}`, m.detail)),
-    ...plan.vendors.flatMap((v) => vevent(`vendor-${v.key}`, v.bookBy, `${name}: book ${v.name}`, v.questions.join('\n'))),
-    'END:VCALENDAR',
-  ];
-  const blob = new Blob([lines.map(icsFold).join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+  const blob = new Blob([buildIcs(state.plan)], { type: 'text/calendar;charset=utf-8' });
   const url = URL.createObjectURL(blob);
-  const a = h('a', { href: url, download: `${name.replace(/[^\w-]+/g, '-').toLowerCase() || 'event'}-plan.ics` });
-  document.body.append(a);
-  a.click();
-  a.remove();
+  const link = h('a', { href: url, download: icsFileName(state.plan) });
+  document.body.append(link);
+  link.click();
+  link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 

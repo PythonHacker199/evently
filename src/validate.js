@@ -1,4 +1,4 @@
-import { EVENT_TYPES, EVENT_TYPE_KEYS, CURRENCIES } from './templates.js';
+import { EVENT_TYPES, CURRENCIES, isEventType } from './templates.js';
 import { parseISODate, daysBetween } from './dates.js';
 
 export const LIMITS = Object.freeze({
@@ -15,6 +15,7 @@ export const LIMITS = Object.freeze({
 });
 
 // Control characters (except \n and \t) and the bidi overrides used in text-spoofing attacks.
+// eslint-disable-next-line no-control-regex -- matching control characters is the purpose of this pattern.
 const UNSAFE_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F‪-‮⁦-⁩]/g;
 
 /**
@@ -72,8 +73,8 @@ export function validatePlanInput(body, today) {
   }
   const b = /** @type {Record<string, unknown>} */ (body);
 
-  const eventType = typeof b.eventType === 'string' ? b.eventType : '';
-  if (!EVENT_TYPE_KEYS.includes(eventType)) errors.eventType = 'Choose wedding, birthday or community event.';
+  const eventType = b.eventType;
+  if (!isEventType(eventType)) errors.eventType = 'Choose wedding, birthday or community event.';
 
   const dateStr = typeof b.date === 'string' ? b.date.trim() : '';
   const date = parseISODate(dateStr);
@@ -98,11 +99,12 @@ export function validatePlanInput(body, today) {
   const currency = typeof b.currency === 'string' ? b.currency.toUpperCase() : 'INR';
   if (!CURRENCIES.includes(currency)) errors.currency = 'Choose a supported currency.';
 
+  /** @type {string[]} */
   let priorities = [];
   if (b.priorities !== undefined) {
     if (!Array.isArray(b.priorities)) {
       errors.priorities = 'Priorities must be a list.';
-    } else if (!errors.eventType) {
+    } else if (isEventType(eventType)) {
       const allowed = new Set(EVENT_TYPES[eventType].budget.map((c) => c.key).filter((k) => k !== 'contingency'));
       priorities = [...new Set(b.priorities.filter((p) => typeof p === 'string' && allowed.has(p)))];
       if (priorities.length > LIMITS.maxPriorities) errors.priorities = `Pick up to ${LIMITS.maxPriorities} priorities.`;

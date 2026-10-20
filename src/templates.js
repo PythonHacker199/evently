@@ -212,7 +212,18 @@ export const EVENT_TYPES = Object.freeze({
   },
 });
 
-export const EVENT_TYPE_KEYS = Object.freeze(Object.keys(EVENT_TYPES));
+/** @typedef {keyof typeof EVENT_TYPES} EventType */
+
+/** @type {ReadonlyArray<EventType>} */
+export const EVENT_TYPE_KEYS = Object.freeze(/** @type {EventType[]} */ (Object.keys(EVENT_TYPES)));
+
+/**
+ * @param {unknown} value
+ * @returns {value is EventType}
+ */
+export function isEventType(value) {
+  return typeof value === 'string' && Object.hasOwn(EVENT_TYPES, value);
+}
 
 export const CURRENCIES = Object.freeze(['INR', 'USD', 'EUR', 'GBP', 'AED', 'SGD', 'AUD', 'CAD', 'JPY']);
 
