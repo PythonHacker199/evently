@@ -2,6 +2,8 @@
 
 > Built for **PromptWars Virtual**. Describe a wedding, birthday or community event in your own words and get a complete, personalised plan: **budget split, timeline, vendor checklist and ideas**, plus an AI planner you can ask follow-up questions.
 
+**Live demo:** https://evently-214949745569.asia-south1.run.app (classic planner: [/classic/](https://evently-214949745569.asia-south1.run.app/classic/)), running on Google Cloud Run.
+
 ## The problem
 
 Planning an event means juggling money, deadlines and a dozen vendors, usually in scattered notes. Generic checklists ignore your date, budget, city and traditions; pure chatbots invent numbers. Evently combines the two: **deterministic planning maths you can trust** plus **Gemini for understanding you and for the creative, personal parts**.
