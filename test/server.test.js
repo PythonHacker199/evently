@@ -1,7 +1,11 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createApp, createRateLimiter, createTtlCache, SECURITY_HEADERS } from '../server.js';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { createApp, createRateLimiter, createTtlCache, SECURITY_HEADERS, CLASSIC_PREFIX } from '../server.js';
 
 const NOW = () => new Date('2026-10-19T09:30:00Z');
 const quiet = { log() {}, warn() {}, error() {} };
@@ -9,7 +13,8 @@ const VALID = { eventType: 'birthday', date: '2026-12-05', guests: 30, budget: 6
 
 /** Start an app on a random port and return a base URL plus a closer. */
 async function start(options = {}) {
-  const server = await createApp({ now: NOW, log: quiet, ...options });
+  // webDir: null = behave like a fresh clone without the Evently build, unless a test passes one.
+  const server = await createApp({ now: NOW, log: quiet, webDir: null, ...options });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
   return { base: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
@@ -17,6 +22,60 @@ async function start(options = {}) {
 
 const post = (base, path, body, headers = {}) =>
   fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) });
+
+describe('static routing: Evently at /, classic planner at /classic/', () => {
+  let app;
+  let webDir;
+  before(async () => {
+    // A tiny stand-in for web/dist, so the test does not depend on running the Vite build.
+    webDir = await mkdtemp(path.join(tmpdir(), 'evently-dist-'));
+    await mkdir(path.join(webDir, 'assets'));
+    await writeFile(path.join(webDir, 'index.html'), '<!doctype html><title>Evently test</title>');
+    await writeFile(path.join(webDir, 'assets', 'index-abc123.js'), 'console.log(1)');
+    app = await start({ webDir });
+  });
+  after(async () => {
+    await app.close();
+    await rm(webDir, { recursive: true, force: true });
+  });
+
+  test('serves the Evently build at /', async () => {
+    const res = await fetch(`${app.base}/`);
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /Evently test/);
+  });
+
+  test('hashed build assets are cached as immutable', async () => {
+    const res = await fetch(`${app.base}/assets/index-abc123.js`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('cache-control'), /immutable/);
+  });
+
+  test('serves the classic planner under /classic/ with a redirect for the bare path', async () => {
+    const redirect = await fetch(`${app.base}${CLASSIC_PREFIX}`, { redirect: 'manual' });
+    assert.equal(redirect.status, 301);
+    assert.equal(redirect.headers.get('location'), `${CLASSIC_PREFIX}/`);
+    const page = await fetch(`${app.base}${CLASSIC_PREFIX}/`);
+    assert.match(await page.text(), /EventWise/);
+    assert.equal(page.headers.get('cache-control'), 'no-cache');
+    assert.equal((await fetch(`${app.base}${CLASSIC_PREFIX}/app.js`)).status, 200);
+  });
+
+  test('CSP allows the hero video origin but nothing else new', async () => {
+    const csp = (await fetch(`${app.base}/`)).headers.get('content-security-policy');
+    assert.match(csp, /media-src 'self' https:\/\/pollen-batch-41236914\.figma\.site/);
+    assert.match(csp, /script-src 'self'(;|$)/);
+  });
+
+  test('falls back to the classic planner at / when Evently is not built', async () => {
+    const fallback = await start({ webDir: path.join(webDir, 'does-not-exist') });
+    try {
+      assert.match(await (await fetch(`${fallback.base}/`)).text(), /EventWise/);
+    } finally {
+      await fallback.close();
+    }
+  });
+});
 
 describe('server without Gemini (curated mode)', () => {
   let app;

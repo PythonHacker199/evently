@@ -6,10 +6,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { getPublicConfig } from './src/templates.js';
-import { validatePlanInput, validateQuestion } from './src/validate.js';
+import { validatePlanInput, validateQuestion, validateDescription } from './src/validate.js';
 import { buildPlan } from './src/planner.js';
 import { createGeminiClient } from './src/gemini.js';
 import { generateIdeas, answerQuestion, describeError } from './src/ideas.js';
+import { parseDescription } from './src/parse.js';
 import { formatISODate, startOfUTCDay } from './src/dates.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -24,8 +25,15 @@ const MIME = Object.freeze({
   '.webmanifest': 'application/manifest+json',
   '.ico': 'image/x-icon',
   '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.woff2': 'font/woff2',
   '.txt': 'text/plain; charset=utf-8',
 });
+
+/** The original form-based planner is still served, under this prefix, next to the Evently page. */
+export const CLASSIC_PREFIX = '/classic';
+/** Hero background video for the Evently page (from the design spec). */
+const VIDEO_ORIGIN = 'https://pollen-batch-41236914.figma.site';
 const COMPRESSIBLE = new Set(['.html', '.css', '.js', '.svg', '.json', '.webmanifest', '.txt']);
 
 export const SECURITY_HEADERS = Object.freeze({
@@ -35,6 +43,7 @@ export const SECURITY_HEADERS = Object.freeze({
     "style-src 'self' https://fonts.googleapis.com",
     'font-src https://fonts.gstatic.com',
     "img-src 'self' data:",
+    `media-src 'self' ${VIDEO_ORIGIN}`,
     "connect-src 'self'",
     "object-src 'none'",
     "base-uri 'none'",
@@ -111,13 +120,17 @@ export function createTtlCache({ max, ttlMs }) {
   };
 }
 
+/** @typedef {{ body: Buffer, gzip: Buffer | null, type: string, etag: string, immutable: boolean }} StaticFile */
+
 /**
  * Read every file under `dir` into memory once (the site is tiny), with gzip and ETags.
  * Also prevents path traversal by construction: only preloaded paths can ever be served.
  * @param {string} dir
+ * @param {string} [prefix] URL prefix to mount the files under, e.g. "/classic"
+ * @returns {Promise<Map<string, StaticFile>>}
  */
-async function loadStatic(dir) {
-  /** @type {Map<string, { body: Buffer, gzip: Buffer | null, type: string, etag: string }>} */
+async function loadStatic(dir, prefix = '') {
+  /** @type {Map<string, StaticFile>} */
   const files = new Map();
   const entries = await readdir(dir, { recursive: true, withFileTypes: true });
   for (const entry of entries) {
@@ -126,15 +139,31 @@ async function loadStatic(dir) {
     const ext = path.extname(entry.name).toLowerCase();
     if (!MIME[ext]) continue;
     const body = await readFile(full);
-    const urlPath = '/' + path.relative(dir, full).split(path.sep).join('/');
-    files.set(urlPath, {
+    const relative = '/' + path.relative(dir, full).split(path.sep).join('/');
+    files.set(prefix + relative, {
       body,
       gzip: COMPRESSIBLE.has(ext) ? gzipSync(body) : null,
       type: MIME[ext],
       etag: `"${createHash('sha1').update(body).digest('base64url')}"`,
+      // Vite puts content-hashed files under /assets/, so their URL changes whenever they do.
+      immutable: relative.startsWith('/assets/'),
     });
   }
   return files;
+}
+
+/**
+ * Load the built Evently page, or null when it has not been built (e.g. a fresh clone running tests).
+ * @param {string | null} dir
+ */
+async function loadOptionalStatic(dir) {
+  if (!dir) return null;
+  try {
+    return await loadStatic(dir);
+  } catch (err) {
+    if (/** @type {NodeJS.ErrnoException} */ (err).code === 'ENOENT') return null;
+    throw err;
+  }
 }
 
 /**
@@ -196,7 +225,8 @@ function sendJson(res, status, payload) {
  * @property {string[]} [fallbackModels] tried in order when the primary model is overloaded
  * @property {typeof fetch} [fetchImpl]
  * @property {() => Date} [now]
- * @property {string} [publicDir]
+ * @property {string} [publicDir] classic planner UI, served under /classic/
+ * @property {string | null} [webDir] built Evently page (web/dist), served at /; when missing, the classic UI is served at / too
  * @property {{ windowMs: number, max: number }} [rateLimit]
  * @property {boolean} [trustProxy] read client IP from X-Forwarded-For (Cloud Run sets it)
  * @property {Pick<Console, 'log' | 'warn' | 'error'>} [log]
@@ -214,15 +244,20 @@ export async function createApp(options = {}) {
     fetchImpl,
     now = () => new Date(),
     publicDir = path.join(ROOT, 'public'),
+    webDir = path.join(ROOT, 'web', 'dist'),
     rateLimit = { windowMs: 60_000, max: 20 },
     trustProxy = false,
     log = console,
   } = options;
 
   const client = apiKey ? createGeminiClient({ apiKey, model, fallbackModels, fetchImpl }) : null;
-  const files = await loadStatic(publicDir);
+  const web = await loadOptionalStatic(webDir);
+  if (!web && webDir) log.warn(`Evently build not found at ${webDir}; serving the classic planner at /. Run "npm run build".`);
+  /** @type {Map<string, StaticFile>} */
+  const files = new Map([...(web ?? (await loadStatic(publicDir))), ...(await loadStatic(publicDir, CLASSIC_PREFIX))]);
   const limiter = createRateLimiter(rateLimit);
   const planCache = createTtlCache({ max: 200, ttlMs: 60 * 60 * 1000 });
+  const parseCache = createTtlCache({ max: 200, ttlMs: 60 * 60 * 1000 });
   const aiInfo = { enabled: Boolean(client), model: client?.model ?? null };
 
   /** @param {http.IncomingMessage} req */
@@ -279,9 +314,44 @@ export async function createApp(options = {}) {
     }
   }
 
+  /**
+   * Free text -> structured plan input. The client then calls /api/plan with `input`
+   * (after asking the user for anything listed in `missing`).
+   * @param {http.IncomingMessage} req @param {http.ServerResponse} res
+   */
+  async function handleParse(req, res) {
+    enforceRateLimit(req);
+    if (!client) throw new HttpError(503, 'The AI assistant is not configured on this server (missing GEMINI_API_KEY).');
+    const body = /** @type {any} */ (await readJsonBody(req));
+    const text = validateDescription(body?.text);
+    if (!text.ok) throw new HttpError(400, text.error);
+
+    const today = startOfUTCDay(now());
+    // Relative dates ("next Saturday") depend on today, so it is part of the key.
+    const cacheKey = `${formatISODate(today)}:${createHash('sha256').update(text.value).digest('base64url')}`;
+    let parsed = /** @type {{ input: Record<string, unknown>, missing: string[] } | undefined} */ (parseCache.get(cacheKey));
+    if (!parsed) {
+      try {
+        const { input, missing } = await parseDescription(text.value, client, today);
+        parsed = { input, missing };
+      } catch (err) {
+        log.warn(`Gemini parse failed: ${describeError(err)}`);
+        throw new HttpError(502, 'The AI assistant could not read your description right now. Please try again.');
+      }
+      parseCache.set(cacheKey, parsed);
+    }
+    sendJson(res, 200, parsed);
+  }
+
   /** @param {http.IncomingMessage} req @param {http.ServerResponse} res @param {string} pathname */
   function serveStatic(req, res, pathname) {
-    const file = files.get(pathname === '/' ? '/index.html' : pathname);
+    if (pathname === CLASSIC_PREFIX) {
+      // Relative asset URLs in the classic page need the trailing slash.
+      res.writeHead(301, { Location: `${CLASSIC_PREFIX}/` });
+      res.end();
+      return;
+    }
+    const file = files.get(pathname.endsWith('/') ? `${pathname}index.html` : pathname);
     if (!file) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Not found');
@@ -290,8 +360,8 @@ export async function createApp(options = {}) {
     const headers = {
       'Content-Type': file.type,
       ETag: file.etag,
-      // Assets are not fingerprinted, so always revalidate; unchanged files cost only a 304.
-      'Cache-Control': 'no-cache',
+      // Hashed build assets can be cached forever; everything else revalidates (a 304 when unchanged).
+      'Cache-Control': file.immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
       Vary: 'Accept-Encoding',
     };
     if (req.headers['if-none-match'] === file.etag) {
@@ -325,7 +395,8 @@ export async function createApp(options = {}) {
         else if (route === 'GET /api/config') sendJson(res, 200, { ...getPublicConfig(), ai: aiInfo });
         else if (route === 'POST /api/plan') await handlePlan(req, res);
         else if (route === 'POST /api/ask') await handleAsk(req, res);
-        else if (['/api/health', '/api/config', '/api/plan', '/api/ask'].includes(pathname)) throw new HttpError(405, 'Method not allowed.');
+        else if (route === 'POST /api/parse') await handleParse(req, res);
+        else if (['/api/health', '/api/config', '/api/plan', '/api/ask', '/api/parse'].includes(pathname)) throw new HttpError(405, 'Method not allowed.');
         else throw new HttpError(404, 'Unknown API route.');
       } else if (method === 'GET' || method === 'HEAD') {
         serveStatic(req, res, pathname);

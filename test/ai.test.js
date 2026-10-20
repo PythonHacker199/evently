@@ -102,6 +102,18 @@ describe('gemini client', () => {
     assert.equal(urls.length, 2);
   });
 
+  test('falls back when the primary model hangs past the timeout', async () => {
+    const fetchImpl = async (url, init) => {
+      if (url.includes('primary')) {
+        // Never answers; only the abort signal ends it, like an overloaded model.
+        return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+      }
+      return new Response(JSON.stringify(geminiReply('fast answer')), { status: 200 });
+    };
+    const client = createGeminiClient({ apiKey: 'k', model: 'primary', fallbackModels: ['lite'], fetchImpl, timeoutMs: 50 });
+    assert.deepEqual(await client.generateText({ system: 's', prompt: 'p' }), { text: 'fast answer', model: 'lite' });
+  });
+
   test('does not fall back on non-retryable errors (e.g. bad key)', async () => {
     const fetchImpl = fakeFetch({ error: { status: 'PERMISSION_DENIED', message: 'API key not valid' } }, 403);
     const client = createGeminiClient({ apiKey: 'k', model: 'primary', fallbackModels: ['lite'], fetchImpl });

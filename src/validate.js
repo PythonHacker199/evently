@@ -7,6 +7,7 @@ export const LIMITS = Object.freeze({
   theme: 120,
   notes: 600,
   question: 500,
+  description: 600,
   maxGuests: 10000,
   maxBudget: 1e11,
   maxLeadDays: 3 * 365,
@@ -136,4 +137,17 @@ export function validateQuestion(value) {
   const q = cleanText(value, LIMITS.question, { multiline: true });
   if (q.length < 3) return { ok: false, error: 'Ask a question of at least 3 characters.' };
   return { ok: true, value: q };
+}
+
+/**
+ * Validate a free-text event description. Rejects (rather than truncates) long text so the
+ * parser never silently drops details the user typed at the end.
+ * @param {unknown} value
+ * @returns {{ ok: true, value: string } | { ok: false, error: string }}
+ */
+export function validateDescription(value) {
+  const text = cleanText(value, LIMITS.description + 1, { multiline: true });
+  if (text.length < 10) return { ok: false, error: 'Describe your event in at least 10 characters.' };
+  if (text.length > LIMITS.description) return { ok: false, error: `Keep the description under ${LIMITS.description} characters.` };
+  return { ok: true, value: text };
 }

@@ -8,13 +8,15 @@ const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 export class GeminiError extends Error {
   /**
    * @param {string} message safe to show to users
-   * @param {{ status?: number, cause?: unknown, detail?: string }} [opts] `detail` is for server logs only
+   * @param {{ status?: number, cause?: unknown, detail?: string, retryable?: boolean }} [opts]
+   *   `detail` is for server logs only; `retryable` means another model may succeed.
    */
-  constructor(message, { status, cause, detail } = {}) {
+  constructor(message, { status, cause, detail, retryable = false } = {}) {
     super(message, { cause });
     this.name = 'GeminiError';
     this.status = status;
     this.detail = detail;
+    this.retryable = retryable;
   }
 }
 
@@ -45,14 +47,15 @@ const RETRYABLE_STATUS = new Set([429, 500, 503, 504]);
 
 /**
  * @param {{ apiKey: string, model?: string, fallbackModels?: string[], fetchImpl?: typeof fetch, timeoutMs?: number }} options
- *   `fallbackModels` are tried in order when the primary model is overloaded or rate limited.
+ *   `fallbackModels` are tried in order when the primary model is overloaded, rate limited or too slow.
+ *   `timeoutMs` is per model attempt, so a hung model costs at most this long before the fallback runs.
  */
 export function createGeminiClient({
   apiKey,
   model = 'gemini-flash-latest',
   fallbackModels = ['gemini-flash-lite-latest'],
   fetchImpl = fetch,
-  timeoutMs = 30_000,
+  timeoutMs = 15_000,
 }) {
   if (!apiKey) throw new Error('createGeminiClient requires an apiKey');
   const models = [...new Set([model, ...fallbackModels].filter(Boolean))];
@@ -64,7 +67,9 @@ export function createGeminiClient({
    */
   async function callModel(target, { system, prompt, generationConfig }) {
     let res;
+    let body;
     try {
+      // The timeout signal covers both the response headers and reading the body.
       res = await fetchImpl(`${API_BASE}/${encodeURIComponent(target)}:generateContent`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
@@ -75,21 +80,28 @@ export function createGeminiClient({
         }),
         signal: AbortSignal.timeout(timeoutMs),
       });
+      body = await res.json().catch((err) => {
+        if (err instanceof Error && err.name === 'TimeoutError') throw err;
+        return null;
+      });
     } catch (err) {
       const timedOut = err instanceof Error && err.name === 'TimeoutError';
-      throw new GeminiError(timedOut ? 'Gemini request timed out.' : 'Could not reach Gemini.', { cause: err });
+      throw new GeminiError(timedOut ? 'Gemini request timed out.' : 'Could not reach Gemini.', {
+        cause: err,
+        detail: `${target}: ${timedOut ? `no response within ${timeoutMs} ms` : String(err)}`,
+        retryable: true,
+      });
     }
     if (!res.ok) {
       // Keep Google's reason for server logs, but never echo it to clients.
-      const body = await res.json().catch(() => null);
       const detail = body?.error ? `${body.error.status ?? ''}: ${String(body.error.message ?? '').slice(0, 300)}` : undefined;
-      throw new GeminiError(`Gemini API error (HTTP ${res.status}).`, { status: res.status, detail });
+      throw new GeminiError(`Gemini API error (HTTP ${res.status}).`, { status: res.status, detail, retryable: RETRYABLE_STATUS.has(res.status) });
     }
-    return extractText(await res.json());
+    return extractText(body);
   }
 
   /**
-   * Try each model in order, moving on only for retryable upstream errors.
+   * Try each model in order, moving on only for retryable errors (overload, rate limit, timeout, network).
    * @param {{ system: string, prompt: string, generationConfig: object }} req
    * @returns {Promise<{ text: string, model: string }>}
    */
@@ -100,8 +112,7 @@ export function createGeminiClient({
         return { text: await callModel(target, req), model: target };
       } catch (err) {
         lastError = err;
-        const retryable = err instanceof GeminiError && err.status !== undefined && RETRYABLE_STATUS.has(err.status);
-        if (!retryable) throw err;
+        if (!(err instanceof GeminiError && err.retryable)) throw err;
       }
     }
     throw lastError;

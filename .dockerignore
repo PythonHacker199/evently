@@ -1,8 +1,11 @@
 .env
 .env.*
+**/.env
+**/.env.*
 .git
 .claude
-node_modules
+**/node_modules
+web/dist
 test
 *.md
 *.log

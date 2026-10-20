@@ -12,6 +12,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --env-file-if-exists=.env --watch server.js",
+    "dev:web": "npm --prefix web run dev",
+    "setup": "npm --prefix web ci",
+    "build": "npm --prefix web run build",
     "test": "node --test"
   }
 }
