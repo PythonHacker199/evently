@@ -105,8 +105,16 @@ describe('gemini client', () => {
   test('falls back when the primary model hangs past the timeout', async () => {
     const fetchImpl = async (url, init) => {
       if (url.includes('primary')) {
-        // Never answers; only the abort signal ends it, like an overloaded model.
-        return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+        // Never answers; only the abort signal ends it, like an overloaded model. A real request's
+        // open socket keeps the process alive; AbortSignal.timeout's own timer does not on Node 22,
+        // so hold the event loop open the same way until the abort fires.
+        return new Promise((_, reject) => {
+          const socketStandIn = setInterval(() => {}, 1000);
+          init.signal.addEventListener('abort', () => {
+            clearInterval(socketStandIn);
+            reject(init.signal.reason);
+          });
+        });
       }
       return new Response(JSON.stringify(geminiReply('fast answer')), { status: 200 });
     };
